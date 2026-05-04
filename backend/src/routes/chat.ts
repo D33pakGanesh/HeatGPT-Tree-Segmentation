@@ -33,6 +33,12 @@ const ChatRequestSchema = z.object({
       })
     )
     .optional(),
+  segmentationStats: z.object({
+    treeCount: z.number(),
+    totalAreaKm2: z.number(),
+    coveragePct: z.number(),
+    avgConfidence: z.number(),
+  }).optional(),
 })
 
 router.post('/chat', chatLimiter, async (req: Request, res: Response) => {
@@ -41,9 +47,9 @@ router.post('/chat', chatLimiter, async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Invalid request', details: parsed.error.errors })
   }
 
-  const { heatStats, question, history } = parsed.data
+  const { heatStats, question, history, segmentationStats } = parsed.data
 
-  const systemPrompt = buildSystemPrompt(heatStats, heatStats.lgaName)
+  const systemPrompt = buildSystemPrompt(heatStats, heatStats.lgaName, segmentationStats)
 
   const messages: ChatMessage[] = [
     ...(history ?? []),

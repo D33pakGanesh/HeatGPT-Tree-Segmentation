@@ -1,7 +1,11 @@
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import { HeatStats, ChatMessage } from '../types'
 
-export function buildSystemPrompt(heatStats: HeatStats, lgaName: string): string {
+export function buildSystemPrompt(
+  heatStats: HeatStats,
+  lgaName: string,
+  segmentation?: { treeCount: number; totalAreaKm2: number; coveragePct: number; avgConfidence: number }
+): string {
   const { uhiIntensity, avgNdvi, avgLstCelsius, dateRangeStart, dateRangeEnd } = heatStats
 
   const uhiDesc =
@@ -16,14 +20,22 @@ export function buildSystemPrompt(heatStats: HeatStats, lgaName: string): string
     avgNdvi > 0.1 ? 'sparse vegetation' :
     'minimal vegetation or urban surface'
 
-  return (
+  let prompt =
     `You are HeatGPT, an expert in urban heat islands and climate science. ` +
     `The user is exploring ${lgaName} in Australia. ` +
     `Key data: Average LST = ${avgLstCelsius}°C, NDVI = ${avgNdvi} (${vegDesc}), ` +
     `UHI Intensity = ${uhiIntensity}°C (${uhiDesc}). ` +
-    `Data period: ${dateRangeStart} to ${dateRangeEnd}. ` +
-    `Answer questions clearly and suggest mitigation strategies where relevant.`
-  )
+    `Data period: ${dateRangeStart} to ${dateRangeEnd}. `
+
+  if (segmentation) {
+    prompt +=
+      `GeoAI tree segmentation detected ${segmentation.treeCount} individual tree crowns ` +
+      `covering ${segmentation.coveragePct.toFixed(1)}% of the LGA (${segmentation.totalAreaKm2.toFixed(2)} km²). ` +
+      `Higher tree canopy coverage is associated with reduced UHI intensity through shading and evapotranspiration. `
+  }
+
+  prompt += `Answer questions clearly and suggest mitigation strategies where relevant.`
+  return prompt
 }
 
 export async function sendMessage(messages: ChatMessage[], systemPrompt: string): Promise<string> {

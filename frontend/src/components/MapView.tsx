@@ -8,19 +8,25 @@ interface MapViewProps {
   onLgaSelect: (lgaId: string) => void
   activeTileLayer?: {
     url: string
-    type: 'lst' | 'ndvi'
+    type: 'lst' | 'ndvi' | 'tree_segmentation'
     bbox?: { west: number; south: number; east: number; north: number }
     lgaGeometry?: GeoJSON.Geometry | null
+  } | null
+  treeSegmentation?: {
+    tileUrl: string
+    segments: GeoJSON.FeatureCollection
+    bbox: { west: number; south: number; east: number; north: number }
   } | null
   symbology?: SymbologySettings
   mapRefCallback?: (map: L.Map) => void
 }
 
-export default function MapView({ onLgaSelect, activeTileLayer, symbology, mapRefCallback }: MapViewProps) {
+export default function MapView({ onLgaSelect, activeTileLayer, treeSegmentation, symbology, mapRefCallback }: MapViewProps) {
   const mapRef = useRef<L.Map | null>(null)
   const mapInitialised = useRef(false)
   const geeLayerRef = useRef<any>(null)
   const lgaLayerRef = useRef<L.GeoJSON | null>(null)
+  const treeSegLayerRef = useRef<L.GeoJSON | null>(null)
 
   const { data, isError } = useQuery<GeoJSON.FeatureCollection>({
     queryKey: ['lgas'],
@@ -58,15 +64,16 @@ export default function MapView({ onLgaSelect, activeTileLayer, symbology, mapRe
   // Re-apply symbology when settings change
   useEffect(() => {
     if (!lgaLayerRef.current || !symbology) return
+    const hasOverlay = activeTileLayer || treeSegmentation
     lgaLayerRef.current.eachLayer((layer: any) => {
       layer.setStyle({
         fillColor: symbology.solidColor,
-        fillOpacity: activeTileLayer ? 0.05 : symbology.fillOpacity,
-        weight: activeTileLayer ? 0.3 : symbology.strokeWeight,
+        fillOpacity: hasOverlay ? 0.05 : symbology.fillOpacity,
+        weight: hasOverlay ? 0.3 : symbology.strokeWeight,
         color: symbology.strokeColor,
       })
     })
-  }, [symbology, activeTileLayer])
+  }, [symbology, activeTileLayer, treeSegmentation])
 
   useEffect(() => {
     const map = mapRef.current
@@ -145,6 +152,46 @@ export default function MapView({ onLgaSelect, activeTileLayer, symbology, mapRe
       geeLayerRef.current = overlay
     }
   }, [activeTileLayer])
+
+  // Tree segmentation: render HR basemap + GeoJSON polygon layer
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+
+    // Remove existing tree segment layer
+    if (treeSegLayerRef.current) {
+      treeSegLayerRef.current.remove()
+      treeSegLayerRef.current = null
+    }
+
+    if (!treeSegmentation) return
+
+    const { tileUrl, segments, bbox } = treeSegmentation
+
+    // Layer 1: HR satellite basemap (SVG clip-masked, same pattern as LST/NDVI)
+    // This is handled by activeTileLayer in the existing effect above.
+    // Layer 2: GeoJSON segment polygons on top
+    treeSegLayerRef.current = L.geoJSON(segments, {
+      style: () => ({
+        fillColor: '#22c55e',
+        fillOpacity: 0.4,
+        color: '#16a34a',
+        weight: 1.5,
+      }),
+      onEachFeature: (feature, layer) => {
+        const props = feature.properties
+        if (props) {
+          layer.bindTooltip(
+            `Area: ${props.area_m2?.toFixed(0)} m² · Confidence: ${(props.confidence * 100)?.toFixed(0)}%`,
+            { sticky: true, className: 'tree-tooltip' }
+          )
+        }
+      },
+    }).addTo(map)
+
+    // Bring LGA boundary on top
+    if (lgaLayerRef.current) lgaLayerRef.current.bringToFront()
+  }, [treeSegmentation])
 
   if (isError) return <div>Failed to load LGA boundaries.</div>
   return <div id="map" style={{ height: '100vh', width: '100%' }} />

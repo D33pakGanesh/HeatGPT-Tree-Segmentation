@@ -34,7 +34,7 @@ CREATE INDEX IF NOT EXISTS idx_heat_stats_lga ON heat_stats(lga_id);
 CREATE TABLE IF NOT EXISTS gee_layers (
     id               SERIAL PRIMARY KEY,
     lga_id           VARCHAR(10) NOT NULL REFERENCES lgas(lga_id),
-    layer_type       VARCHAR(10) NOT NULL,          -- 'lst' or 'ndvi'
+    layer_type       VARCHAR(20) NOT NULL,          -- 'lst', 'ndvi', or 'tree_segmentation'
     date_range_start DATE NOT NULL,
     date_range_end   DATE NOT NULL,
     tile_url         TEXT NOT NULL,                 -- proxied tile URL
@@ -48,3 +48,21 @@ CREATE TABLE IF NOT EXISTS gee_layers (
 CREATE INDEX IF NOT EXISTS idx_gee_layers_lga ON gee_layers(lga_id);
 CREATE INDEX IF NOT EXISTS idx_gee_layers_lga_type ON gee_layers(lga_id, layer_type);
 CREATE INDEX IF NOT EXISTS idx_gee_layers_lookup ON gee_layers(lga_id, layer_type, date_range_start, date_range_end);
+
+-- Tree segmentation results — individual tree/cluster polygon footprints from GeoAI (geoai-py CLIPSeg)
+CREATE TABLE IF NOT EXISTS tree_segments (
+    id               SERIAL PRIMARY KEY,
+    lga_id           VARCHAR(10) NOT NULL REFERENCES lgas(lga_id),
+    geom             GEOMETRY(Polygon, 4326) NOT NULL,
+    area_m2          NUMERIC(16, 4) NOT NULL,
+    confidence       NUMERIC(6, 4) NOT NULL,
+    date_range_start DATE NOT NULL,
+    date_range_end   DATE NOT NULL,
+    processed_at     TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tree_segments_lga
+    ON tree_segments(lga_id, date_range_start, date_range_end);
+
+CREATE INDEX IF NOT EXISTS idx_tree_segments_geom
+    ON tree_segments USING GIST(geom);

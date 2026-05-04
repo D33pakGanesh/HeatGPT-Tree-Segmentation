@@ -15,6 +15,12 @@ interface HeatStats {
 interface ChatInterfaceProps {
   lgaId: string
   heatStats: HeatStats
+  segmentationStats?: {
+    treeCount: number
+    totalAreaKm2: number
+    coveragePct: number
+    avgConfidence: number
+  }
 }
 
 interface ChatMessage {
@@ -28,9 +34,10 @@ const PROMPT_CHIPS = [
   'What does the NDVI mean?',
   'How does this compare to other areas?',
   'What can be done to reduce heat?',
+  'How does tree cover affect urban heat?',
 ]
 
-export default function ChatInterface({ lgaId, heatStats }: ChatInterfaceProps) {
+export default function ChatInterface({ lgaId, heatStats, segmentationStats }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -55,7 +62,13 @@ export default function ChatInterface({ lgaId, heatStats }: ChatInterfaceProps) 
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ lgaId, question, heatStats, history: messages }),
+        body: JSON.stringify({
+          lgaId,
+          question,
+          heatStats,
+          history: messages,
+          ...(segmentationStats ? { segmentationStats } : {}),
+        }),
       })
 
       if (!res.ok) throw new Error('Request failed')

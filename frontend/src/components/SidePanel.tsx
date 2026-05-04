@@ -18,6 +18,7 @@ interface SidePanelProps {
   lgaId: string | null
   onCollapse: (collapsed: boolean) => void
   onTileLayerChange: (layer: { url: string; type: 'lst' | 'ndvi'; bbox?: { west: number; south: number; east: number; north: number }; dateRangeStart?: string; dateRangeEnd?: string } | null) => void
+  onTreeSegmentationChange: (data: { tileUrl: string; segments: GeoJSON.FeatureCollection; bbox: { west: number; south: number; east: number; north: number }; dateRangeStart: string; dateRangeEnd: string } | null) => void
 }
 
 function fmt(d: Date) { return d.toISOString().slice(0, 10) }
@@ -37,11 +38,11 @@ function getHeatRiskBadge(uhi: number) {
 
 const PANEL_WIDTH = 420
 
-export default function SidePanel({ lgaId, onCollapse, onTileLayerChange }: SidePanelProps) {
+export default function SidePanel({ lgaId, onCollapse, onTileLayerChange, onTreeSegmentationChange }: SidePanelProps) {
   const [collapsed, setCollapsed] = useState(true)
   const [hasData, setHasData] = useState(false)
   const [timespan, setTimespan] = useState<Timespan>('30d')
-  const [activeLayer, setActiveLayer] = useState<'lst' | 'ndvi' | null>(null)
+  const [activeLayer, setActiveLayer] = useState<'lst' | 'ndvi' | 'tree_segmentation' | null>(null)
   const [vizStart, setVizStart] = useState('')
   const [vizEnd, setVizEnd] = useState('')
   const [vizDateRange, setVizDateRange] = useState<{ start: string; end: string } | null>(null)
@@ -60,6 +61,7 @@ export default function SidePanel({ lgaId, onCollapse, onTileLayerChange }: Side
     setVizEnd('')
     setTileError(null)
     onTileLayerChange(null)
+    onTreeSegmentationChange(null)
   }, [lgaId])
 
   // Notify parent of collapse state so other controls can shift
@@ -125,8 +127,23 @@ export default function SidePanel({ lgaId, onCollapse, onTileLayerChange }: Side
   })
   const savedLayers = savedLayersData?.layers ?? []
 
+  // Tree segmentation query — only fires when tree_segmentation layer is active
+  const { data: treeSegData, isFetching: isTreeFetching, isError: isTreeError } = useQuery<{
+    lgaId: string; lgaName: string; treeCount: number; totalAreaKm2: number
+    avgConfidence: number; coveragePct: number; tileUrl: string
+    bbox: { west: number; south: number; east: number; north: number }
+    segments: GeoJSON.FeatureCollection; dateRangeStart: string; dateRangeEnd: string
+  }>({
+    queryKey: ['tree-segmentation', lgaId, tileQueryRange.start, tileQueryRange.end],
+    queryFn: () => fetch(`/api/lga/${lgaId}/tree-segmentation?start=${tileQueryRange.start}&end=${tileQueryRange.end}`)
+      .then(r => { if (!r.ok) throw new Error('Failed'); return r.json() }),
+    enabled: lgaId !== null && activeLayer === 'tree_segmentation' && heatStats !== undefined,
+    retry: false,
+    staleTime: Infinity, // CLIPSeg results are expensive — never auto-refetch
+  })
+
   useEffect(() => {
-    if (tileData && activeLayer) {
+    if (tileData && activeLayer && activeLayer !== 'tree_segmentation') {
       onTileLayerChange({
         url: tileData.tileUrl,
         type: activeLayer,
@@ -136,6 +153,19 @@ export default function SidePanel({ lgaId, onCollapse, onTileLayerChange }: Side
       })
     }
   }, [tileData, activeLayer])
+
+  // Emit tree segmentation data to map when it arrives
+  useEffect(() => {
+    if (treeSegData && activeLayer === 'tree_segmentation') {
+      onTreeSegmentationChange({
+        tileUrl: treeSegData.tileUrl,
+        segments: treeSegData.segments,
+        bbox: treeSegData.bbox,
+        dateRangeStart: treeSegData.dateRangeStart,
+        dateRangeEnd: treeSegData.dateRangeEnd,
+      })
+    }
+  }, [treeSegData, activeLayer])
 
   if (lgaId === null) return null
 
@@ -244,19 +274,58 @@ export default function SidePanel({ lgaId, onCollapse, onTileLayerChange }: Side
 
             {/* Satellite layer toggles */}
             <div style={{ display: 'flex', gap: '6px', marginBottom: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
-              {(['lst', 'ndvi', null] as const).map(layer => {
-                const label = layer === 'lst' ? 'LST Heatmap' : layer === 'ndvi' ? 'NDVI Vegetation' : 'None'
+              {(['lst', 'ndvi', 'tree_segmentation', null] as const).map(layer => {
+                const label = layer === 'lst' ? 'LST Heatmap' : layer === 'ndvi' ? 'NDVI Vegetation' : layer === 'tree_segmentation' ? '🌳 Trees' : 'None'
                 const isActive = activeLayer === layer
-                const loading = isTileFetching && activeLayer === layer
+                const loading = (isTileFetching && (activeLayer === 'lst' || activeLayer === 'ndvi') && activeLayer === layer)
+                  || (isTreeFetching && activeLayer === 'tree_segmentation' && layer === 'tree_segmentation')
                 return (
-                  <button key={String(layer)} onClick={() => { setActiveLayer(layer); setTileError(null); if (layer === null) onTileLayerChange(null) }}
-                    style={{ padding: '5px 12px', borderRadius: '6px', border: '1px solid', fontSize: '13px', fontWeight: 500, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', backgroundColor: isActive ? '#2563eb' : '#f3f4f6', color: isActive ? '#fff' : '#374151', borderColor: isActive ? '#2563eb' : '#d1d5db' }}>
+                  <button key={String(layer)} onClick={() => {
+                    setActiveLayer(layer)
+                    setTileError(null)
+                    if (layer === null) { onTileLayerChange(null); onTreeSegmentationChange(null) }
+                    if (layer !== 'tree_segmentation') onTreeSegmentationChange(null)
+                    if (layer === 'tree_segmentation') onTileLayerChange(null)
+                  }}
+                    style={{ padding: '5px 12px', borderRadius: '6px', border: '1px solid', fontSize: '13px', fontWeight: 500, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', backgroundColor: isActive ? (layer === 'tree_segmentation' ? '#16a34a' : '#2563eb') : '#f3f4f6', color: isActive ? '#fff' : '#374151', borderColor: isActive ? (layer === 'tree_segmentation' ? '#16a34a' : '#2563eb') : '#d1d5db' }}>
                     {label}
                     {loading && <span style={{ display: 'inline-block', width: '10px', height: '10px', border: '2px solid rgba(255,255,255,0.4)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />}
                   </button>
                 )
               })}
             </div>
+
+            {/* Tree segmentation stat cards */}
+            {activeLayer === 'tree_segmentation' && (
+              <div style={{ marginBottom: '16px' }}>
+                {isTreeFetching && (
+                  <div style={{ backgroundColor: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '8px', padding: '12px', fontSize: '13px', color: '#15803d' }}>
+                    🌳 Running GeoAI tree segmentation (CLIPSeg)… this may take up to 60 seconds on first run.
+                  </div>
+                )}
+                {isTreeError && (
+                  <div style={{ backgroundColor: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', padding: '12px', fontSize: '13px', color: '#dc2626' }}>
+                    ⚠ Tree segmentation unavailable for this area or period.
+                  </div>
+                )}
+                {treeSegData && !isTreeFetching && (
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px' }}>
+                    <div style={{ backgroundColor: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '8px', padding: '12px', textAlign: 'center' }}>
+                      <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '4px' }}>Trees Detected</div>
+                      <div style={{ fontSize: '20px', fontWeight: 700, color: '#15803d' }}>{treeSegData.treeCount.toLocaleString()}</div>
+                    </div>
+                    <div style={{ backgroundColor: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '8px', padding: '12px', textAlign: 'center' }}>
+                      <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '4px' }}>Tree Cover</div>
+                      <div style={{ fontSize: '20px', fontWeight: 700, color: '#15803d' }}>{treeSegData.coveragePct.toFixed(1)}%</div>
+                    </div>
+                    <div style={{ backgroundColor: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '8px', padding: '12px', textAlign: 'center' }}>
+                      <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '4px' }}>Total Area</div>
+                      <div style={{ fontSize: '20px', fontWeight: 700, color: '#15803d' }}>{treeSegData.totalAreaKm2.toFixed(2)}<span style={{ fontSize: '11px', fontWeight: 400 }}> km²</span></div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             {activeLayer && (
               <div style={{ backgroundColor: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '8px', padding: '12px', marginBottom: '16px' }}>
@@ -361,7 +430,7 @@ export default function SidePanel({ lgaId, onCollapse, onTileLayerChange }: Side
               ))}
             </div>
 
-            <ChatInterface lgaId={lgaId} heatStats={heatStats} />
+            <ChatInterface lgaId={lgaId} heatStats={heatStats} segmentationStats={treeSegData ? { treeCount: treeSegData.treeCount, totalAreaKm2: treeSegData.totalAreaKm2, coveragePct: treeSegData.coveragePct, avgConfidence: treeSegData.avgConfidence } : undefined} />
           </>
         )}
       </div>

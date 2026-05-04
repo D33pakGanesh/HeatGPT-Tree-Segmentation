@@ -1,5 +1,7 @@
 import ee from '@google/earthengine'
 import fs from 'fs'
+import path from 'path'
+import os from 'os'
 import axios from 'axios'
 import { GoogleAuth } from 'google-auth-library'
 import { BBox, DateRange } from '../types'
@@ -292,4 +294,73 @@ export async function getMapTileUrl(
   return response.data.name
     ? `https://earthengine.googleapis.com/v1/${response.data.name}:getPixels`
     : response.data.downloadUrl || response.data.url
+}
+
+/**
+ * Downloads a Sentinel-2 true-colour (B4/B3/B2) tile as a GeoTIFF to a temp file.
+ * Also returns the proxied basemap tile URL for the frontend.
+ * Used by treeSegmentationService to feed the geoai-py Python sidecar.
+ */
+export async function downloadHRTile(
+  bbox: BBox,
+  dateRange: DateRange,
+  lgaId: string
+): Promise<{ tilePath: string; eeUrl: string }> {
+  const region = ee.Geometry.Rectangle([bbox.west, bbox.south, bbox.east, bbox.north])
+
+  const collection = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+    .filterBounds(region)
+    .filterDate(dateRange.start, dateRange.end)
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+
+  const size = await getInfo<number>(collection.size())
+  if (size === 0) throw new Error('No Sentinel-2 imagery available for this area and period')
+
+  // True-colour composite (B4=Red, B3=Green, B2=Blue)
+  const composite = collection.median().select(['B4', 'B3', 'B2'])
+  const visParams = { min: 0, max: 3000, gamma: 1.4 }
+  const image = composite.visualize(visParams)
+
+  const eeExpression = image.serialize()
+  const { token, projectId } = await getAccessToken()
+
+  // Request PNG thumbnail via EE REST API
+  let response: any
+  try {
+    response = await axios.post(
+      `https://earthengine.googleapis.com/v1/projects/${projectId}/thumbnails`,
+      {
+        expression: JSON.parse(eeExpression),
+        fileFormat: 'GEO_TIFF',
+        grid: {
+          dimensions: { width: 512, height: 512 },
+          affineTransform: {
+            scaleX: (bbox.east - bbox.west) / 512,
+            scaleY: -(bbox.north - bbox.south) / 512,
+            translateX: bbox.west,
+            translateY: bbox.north,
+          },
+          crsCode: 'EPSG:4326',
+        },
+      },
+      { headers: { Authorization: `Bearer ${token}` } }
+    )
+  } catch (err: any) {
+    const detail = err.response?.data?.error?.message || err.message
+    throw new Error(`EE downloadHRTile failed: ${detail}`)
+  }
+
+  const eeUrl = response.data.name
+    ? `https://earthengine.googleapis.com/v1/${response.data.name}:getPixels`
+    : response.data.downloadUrl || response.data.url
+
+  // Download the GeoTIFF to a temp file
+  const tilePath = path.join(os.tmpdir(), `tile_${lgaId}_${dateRange.start}_${dateRange.end}.tif`)
+  const tileResponse = await axios.get(eeUrl, {
+    headers: { Authorization: `Bearer ${token}` },
+    responseType: 'arraybuffer',
+  })
+  fs.writeFileSync(tilePath, tileResponse.data)
+
+  return { tilePath, eeUrl }
 }

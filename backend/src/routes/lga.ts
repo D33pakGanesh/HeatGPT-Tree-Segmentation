@@ -5,6 +5,7 @@ import { getAllLgas, getLgaById } from '../services/lgaService'
 import { getHeatStats, getHeatStatsForRange } from '../services/heatService'
 import { getAccessToken, computeLSTTrend, computeNDVITrend } from '../services/earthEngineService'
 import { getGeeLayer } from '../services/geeLayerService'
+import { getTreeSegmentation } from '../services/treeSegmentationService'
 import { DateRange } from '../types'
 
 const router = Router()
@@ -103,12 +104,33 @@ router.get('/lga/:id/tile-image', async (req: Request, res: Response) => {
   const cached = tileUrlCache.get(cacheKey)
 
   if (!cached || cached.expires <= Date.now()) {
-    return res.status(404).send('Tile not ready — request /tiles first')
+    // For tree_segmentation, look up from gee_layers table
+    if (type === 'tree_segmentation') {
+      try {
+        const row = await pool.query(
+          `SELECT ee_url FROM gee_layers
+           WHERE lga_id = $1 AND layer_type = 'tree_segmentation'
+             AND date_range_start = $2 AND date_range_end = $3
+           LIMIT 1`,
+          [req.params.id, start, end]
+        )
+        if (row.rows[0]?.ee_url) {
+          tileUrlCache.set(cacheKey, { url: row.rows[0].ee_url, expires: Date.now() + 55 * 60 * 1000 })
+        } else {
+          return res.status(404).send('Tile not ready — request /tree-segmentation first')
+        }
+      } catch {
+        return res.status(500).send('Failed to look up tile')
+      }
+    } else {
+      return res.status(404).send('Tile not ready — request /tiles first')
+    }
   }
 
+  const entry = tileUrlCache.get(cacheKey)!
   try {
     const { token } = await getAccessToken()
-    const imageRes = await axios.get(cached.url, {
+    const imageRes = await axios.get(entry.url, {
       headers: { Authorization: `Bearer ${token}` },
       responseType: 'arraybuffer',
     })
@@ -189,6 +211,28 @@ router.delete('/lga/:id/saved-layers/:layerId', async (req: Request, res: Respon
   } catch (err: any) {
     console.error('DELETE /lga/:id/saved-layers/:layerId error:', err.message)
     res.status(500).json({ error: 'Failed to delete layer' })
+  }
+})
+
+// GeoAI tree segmentation — DB-first cache, Python sidecar on miss
+router.get('/lga/:id/tree-segmentation', async (req: Request, res: Response) => {
+  const { start, end } = req.query as { start?: string; end?: string }
+
+  const dateRange = {
+    start: start ?? new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+    end: end ?? new Date().toISOString().slice(0, 10),
+  }
+
+  try {
+    const result = await getTreeSegmentation(req.params.id, dateRange)
+    res.status(200).json(result)
+  } catch (err: any) {
+    console.error('GET /lga/:id/tree-segmentation error:', err.message)
+    if (err.status === 404) return res.status(404).json({ error: err.message })
+    if (err.message?.includes('No Sentinel-2 imagery')) {
+      return res.status(422).json({ error: err.message })
+    }
+    res.status(503).json({ error: 'Tree segmentation service unavailable' })
   }
 })
 

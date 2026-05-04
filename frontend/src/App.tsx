@@ -10,11 +10,12 @@ const queryClient = new QueryClient()
 
 type TileLayer = {
   url: string
-  type: 'lst' | 'ndvi'
+  type: 'lst' | 'ndvi' | 'tree_segmentation'
   bbox?: { west: number; south: number; east: number; north: number }
   lgaGeometry?: GeoJSON.Geometry | null
   dateRangeStart?: string
   dateRangeEnd?: string
+  segments?: GeoJSON.FeatureCollection | null
 }
 
 const DEFAULT_SYMBOLOGY: SymbologySettings = {
@@ -29,6 +30,13 @@ function AppInner() {
   const [selectedLgaId, setSelectedLgaId] = useState<string | null>(null)
   const [panelCollapsed, setPanelCollapsed] = useState(true)
   const [activeTileLayer, setActiveTileLayer] = useState<TileLayer | null>(null)
+  const [treeSegmentation, setTreeSegmentation] = useState<{
+    tileUrl: string
+    segments: GeoJSON.FeatureCollection
+    bbox: { west: number; south: number; east: number; north: number }
+    dateRangeStart: string
+    dateRangeEnd: string
+  } | null>(null)
   const [symbology, setSymbology] = useState<SymbologySettings>(DEFAULT_SYMBOLOGY)
   const mapRef = useRef<L.Map | null>(null)
 
@@ -38,6 +46,7 @@ function AppInner() {
   const handleLgaSelect = useCallback((id: string) => {
     setSelectedLgaId(id)
     setActiveTileLayer(null)
+    setTreeSegmentation(null)
     const cached = qc.getQueryData<GeoJSON.FeatureCollection>(['lgas'])
     const feature = cached?.features.find(f => f.properties?.lga_id === id)
     ;(window as any).__selectedLgaGeometry = feature?.geometry ?? null
@@ -62,11 +71,37 @@ function AppInner() {
     }
   }, [])
 
+  const handleTreeSegmentationChange = useCallback((data: {
+    tileUrl: string
+    segments: GeoJSON.FeatureCollection
+    bbox: { west: number; south: number; east: number; north: number }
+    dateRangeStart: string
+    dateRangeEnd: string
+  } | null) => {
+    if (!data) { setTreeSegmentation(null); setActiveTileLayer(null); return }
+    setTreeSegmentation(data)
+    // Also set activeTileLayer for the HR basemap SVG clip rendering
+    setActiveTileLayer({
+      url: data.tileUrl,
+      type: 'tree_segmentation',
+      bbox: data.bbox,
+      lgaGeometry: (window as any).__selectedLgaGeometry ?? null,
+      dateRangeStart: data.dateRangeStart,
+      dateRangeEnd: data.dateRangeEnd,
+      segments: data.segments,
+    })
+    if (data.bbox && mapRef.current) {
+      const { west, south, east, north } = data.bbox
+      mapRef.current.fitBounds([[south, west], [north, east]], { padding: [40, 40], maxZoom: 13 })
+    }
+  }, [])
+
   return (
     <>
       <MapView
         onLgaSelect={handleLgaSelect}
         activeTileLayer={activeTileLayer}
+        treeSegmentation={treeSegmentation}
         symbology={symbology}
         mapRefCallback={(map) => { mapRef.current = map }}
       />
@@ -80,6 +115,7 @@ function AppInner() {
         lgaId={selectedLgaId}
         onCollapse={setPanelCollapsed}
         onTileLayerChange={handleTileLayerChange}
+        onTreeSegmentationChange={handleTreeSegmentationChange}
       />
     </>
   )
